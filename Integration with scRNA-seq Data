@@ -1,0 +1,115 @@
+#load libraries
+library(Seurat)
+library(SeuratData)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+
+dir <- "~/Library/CloudStorage/Box-Box/..."  
+setwd(dir)
+
+#to avoid getting error "vector memory exhausted (limit reached?)", run the following line
+options(future.globals.maxSize= 4000*1024^5)
+
+#load scRNAseq dataset (matrix or seurat object)
+single_cell <- readRDS(file.path("~/Library/CloudStorage/Box-Box/..."), "Assembled10DomainsFiltered.rds")
+feature_meta <- read.csv(file.path("~/Library/CloudStorage/Box-Box/..), "featuremeta.convertnames.csv")
+
+# To have ENSG:
+rownames(single_cell@assays$RNA@features@.Data) <- feature_meta$gene_ids
+
+#check if we have gene symbols or ENSG
+single_cell@assays$RNA@features@.Data
+
+rownames(single_cell@assays$RNA@meta.data) <- feature_meta$gene_ids
+
+#clustering:
+LayerData(single_cell, layer="data") <- LayerData(single_cell, layer="counts")
+
+single_cell <- FindVariableFeatures(single_cell)
+single_cell <- ScaleData(single_cell)
+single_cell <- RunPCA(single_cell)
+single_cell <- RunUMAP(single_cell, dims = 1:30)
+
+
+DimPlot(object = single_cell, reduction = "umap")
+DimPlot(single_cell, group.by = "broad_celltype", label = TRUE)
+
+#plot a single marker
+FeaturePlot(single_cell, features = "EPCAM")
+
+#integration
+anchors <- FindTransferAnchors(reference = single_cell, query = fffl, normalization.method = "LogNormalize")
+predictions.assay <- TransferData(anchorset = anchors, refdata = single_cell$broad_celltype, prediction.assay = TRUE,
+    weight.reduction = fffl[["pca"]], dims = 1:30)
+fffl[["predictions"]] <- predictions.assay
+
+rownames(fffl@assays$predictions@meta.features)
+rowSums(fffl@assays$predictions@data)
+
+
+#select celltype for each pixel based on max prediction
+rownames(predictions.assay$data)
+predictions <- predictions.assay$data %>% t()
+matched_cols <- c()
+for (i in 1:dim(predictions)[1]) {
+  temp <- predictions[i,]==predictions[i, "max"]
+  matched_col <- colnames(predictions)[temp==T]
+  matched_cols <- c(matched_cols, matched_col)
+  
+  
+}
+final_assignment <- matched_cols[!matched_cols %in% c("max")]
+
+#assign to Seurat
+fffl@meta.data$broad_celltype <- final_assignment
+
+#convert predictions to dataframe
+prediction_df <- as.data.frame(fffl@assays$predictions@data)
+rownames(prediction_df) <-rownames(fffl@assays$predictions@meta.features)
+colnames(prediction_df) <- rownames(fffl@meta.data)
+
+#remove last row (max row)
+prediction_df <- (prediction_df[1:14,])
+
+#create dataframe with an additinal column as pixels before visualizing 
+prediction_df <- t(prediction_df) %>% as.data.frame() %>% dplyr::mutate(X=rownames(.))
+prediction_df$X
+test_prediction <- prediction_df %>% separate(X, c("A", "B"),  sep = "x")
+
+
+#Mean & Medin of the prediction_df
+#Median
+apply(prediction_df, 1, median)
+
+#Mean 
+col_means <- apply(prediction_df[,1:14], 2, mean) %>% as.data.frame()
+
+#Gene/UMI count based on different cell types
+VlnPlot(fffl, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2, group.by="broad_celltype", sort="increasing")
+
+#prediction visualization
+#prediction heatmap
+pdf(file = paste("Proximal epithelial2.pdf",sep =""), width=8.6, height=8.6)
+ggplot(test_prediction, aes(x = as.numeric(A), y = as.numeric(B), color=test_prediction$`Proximal epithelial`)) +
+  #scale_color_gradientn(colours = c("black", "green")) + 
+  scale_color_gradientn(colours = c("blue","green", "red"),
+                        oob = scales::squish) +
+  ggtitle("Proximal epithelial") +
+  #annotation_custom(g, xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=Inf) +
+  guides(colour = guide_colourbar(barwidth = 1, barheight = 30)) +
+  geom_point(shape = 15, size = 3)+
+  expand_limits(x = 0, y = 0) +
+  scale_x_continuous(name="X", limits = c(NA, NA), expand = expansion(mult = c(-0.013, -0.013))) +
+  scale_y_reverse(name="Y", limits = c(NA, NA), expand = expansion(mult = c(-0.013, 0.008))) +
+  coord_equal(xlim=c(0,51),ylim=c(51,1)) +
+  theme(plot.title = element_text(hjust = 0.5, size = 40, face = "bold"),
+        axis.text=element_text(colour="black",size=30),
+        axis.title=element_text(colour="black",size=30,face="bold"),
+        legend.text=element_text(colour="black",size=30),
+        legend.title = element_blank(),
+        #legend.title = element_text(colour="black", size=15, face="bold"),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(size =1, fill = NA))
+dev.off()
